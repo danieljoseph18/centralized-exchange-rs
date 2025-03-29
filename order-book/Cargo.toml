@@ -1,0 +1,10 @@
+[package]
+name = "order-book"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+core-types = { path = "../core-types" }
+rust_decimal = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
