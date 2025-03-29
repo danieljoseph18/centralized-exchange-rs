@@ -209,160 +209,22 @@ impl OrderBook {
         match taker_order.side {
             // Taker is BUYING: Match against ASKS (lowest price first)
             Side::Buy => {
-                let mut ask_prices: Vec<Price> = self.asks.keys().cloned().collect();
-                ask_prices.sort(); // Ensure ascending order (BTreeMap default)
-
-                for price in ask_prices {
-                    // Check if taker is still willing to buy at this price
-                    match taker_order.order_type {
-                        OrderType::Limit => {
-                            if price > taker_order.price.unwrap() {
-                                break; // Stop if ask price is higher than limit price
-                            }
-                        }
-                        OrderType::Market => {
-                            // Market order takes any price
-                        }
-                    }
-
-                    if let Some(orders_at_price) = self.asks.get_mut(&price) {
-                        let mut orders_fully_filled = Vec::new(); // Indices to remove
-
-                        for (index, maker_order) in orders_at_price.iter_mut().enumerate() {
-                            let taker_remaining = taker_order.amount - taker_order.filled_amount;
-                            if taker_remaining <= Decimal::ZERO {
-                                break; // Taker order fully filled
-                            }
-
-                            let maker_remaining = maker_order.amount - maker_order.filled_amount;
-                            let fill_amount = taker_remaining.min(maker_remaining);
-
-                            if fill_amount <= Decimal::ZERO {
-                                continue; // Maker order already filled? Skip.
-                            }
-
-                            // Update filled amounts
-                            taker_order.filled_amount += fill_amount;
-                            maker_order.filled_amount += fill_amount;
-
-                            // Create Trade
-                            let trade = Trade {
-                                id: Uuid::new_v4(), // Generate unique trade ID
-                                market_id: taker_order.market_id.clone(),
-                                taker_order_id: taker_order.id,
-                                maker_order_id: maker_order.id,
-                                amount: fill_amount,
-                                price, // Trade occurs at the maker's price
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                taker_side: Side::Buy,
-                            };
-                            trades.push(trade);
-
-                            // Check if maker order is fully filled
-                            if maker_order.filled_amount >= maker_order.amount {
-                                orders_fully_filled.push(index);
-                                removed_maker_orders.push(maker_order.id);
-                                self.order_locations.remove(&maker_order.id);
-                            } else {
-                                // Add to updated list if partially filled
-                                updated_maker_orders.push(maker_order.clone());
-                            }
-                        } // End loop through orders at this price level
-
-                        // Remove fully filled maker orders from VecDeque (in reverse index order)
-                        for index in orders_fully_filled.into_iter().rev() {
-                            orders_at_price.remove(index);
-                        }
-
-                        // If VecDeque is empty, remove the price level
-                        if orders_at_price.is_empty() {
-                            self.asks.remove(&price);
-                        }
-                    } // End if let Some(orders_at_price)
-
-                    if taker_order.filled_amount >= taker_order.amount {
-                        break; // Taker order fully filled
-                    }
-                } // End loop through ask prices
+                self.match_ask(
+                    &mut taker_order,
+                    &mut trades,
+                    &mut removed_maker_orders,
+                    &mut updated_maker_orders,
+                );
             }
 
             // Taker is SELLING: Match against BIDS (highest price first)
             Side::Sell => {
-                // Need to iterate bids in descending price order
-                let mut bid_prices: Vec<Price> = self.bids.keys().cloned().collect();
-                bid_prices.sort_by(|a, b| b.cmp(a)); // Sort descending
-
-                for price in bid_prices {
-                    // Check if taker is still willing to sell at this price
-                    match taker_order.order_type {
-                        OrderType::Limit => {
-                            if price < taker_order.price.unwrap() {
-                                break; // Stop if bid price is lower than limit price
-                            }
-                        }
-                        OrderType::Market => {
-                            // Market order takes any price
-                        }
-                    }
-
-                    if let Some(orders_at_price) = self.bids.get_mut(&price) {
-                        let mut orders_fully_filled = Vec::new(); // Indices to remove
-
-                        for (index, maker_order) in orders_at_price.iter_mut().enumerate() {
-                            let taker_remaining = taker_order.amount - taker_order.filled_amount;
-                            if taker_remaining <= Decimal::ZERO {
-                                break; // Taker order fully filled
-                            }
-
-                            let maker_remaining = maker_order.amount - maker_order.filled_amount;
-                            let fill_amount = taker_remaining.min(maker_remaining);
-
-                            if fill_amount <= Decimal::ZERO {
-                                continue;
-                            }
-
-                            // Update filled amounts
-                            taker_order.filled_amount += fill_amount;
-                            maker_order.filled_amount += fill_amount;
-
-                            // Create Trade
-                            let trade = Trade {
-                                id: Uuid::new_v4(),
-                                market_id: taker_order.market_id.clone(),
-                                taker_order_id: taker_order.id,
-                                maker_order_id: maker_order.id,
-                                amount: fill_amount,
-                                price, // Trade occurs at the maker's price
-                                timestamp: chrono::Utc::now().timestamp_millis(),
-                                taker_side: Side::Sell,
-                            };
-                            trades.push(trade);
-
-                            // Check if maker order is fully filled
-                            if maker_order.filled_amount >= maker_order.amount {
-                                orders_fully_filled.push(index);
-                                removed_maker_orders.push(maker_order.id);
-                                self.order_locations.remove(&maker_order.id);
-                            } else {
-                                updated_maker_orders.push(maker_order.clone());
-                            }
-                        } // End loop through orders at this price level
-
-                        // Remove fully filled maker orders
-                        for index in orders_fully_filled.into_iter().rev() {
-                            orders_at_price.remove(index);
-                        }
-
-                        // If VecDeque is empty, remove the price level
-                        if orders_at_price.is_empty() {
-                            self.bids.remove(&price);
-                        }
-                    } // End if let Some(orders_at_price)
-
-                    if taker_order.filled_amount >= taker_order.amount {
-                        break; // Taker order fully filled
-                    }
-                } // End loop through bid prices
+                self.match_bid(
+                    &mut taker_order,
+                    &mut trades,
+                    &mut removed_maker_orders,
+                    &mut updated_maker_orders,
+                );
             }
         }
 
@@ -385,6 +247,174 @@ impl OrderBook {
             removed_maker_orders,
             updated_maker_orders,
         }
+    }
+
+    fn match_ask(
+        &mut self,
+        taker_order: &mut Order,
+        trades: &mut Vec<Trade>,
+        removed_maker_orders: &mut Vec<OrderId>,
+        updated_maker_orders: &mut Vec<Order>,
+    ) {
+        let mut ask_prices: Vec<Price> = self.asks.keys().cloned().collect();
+        ask_prices.sort(); // Ensure ascending order (BTreeMap default)
+
+        for price in ask_prices {
+            // Check if taker is still willing to buy at this price
+            match taker_order.order_type {
+                OrderType::Limit => {
+                    if price > taker_order.price.unwrap() {
+                        break; // Stop if ask price is higher than limit price
+                    }
+                }
+                OrderType::Market => {
+                    // Market order takes any price
+                }
+            }
+
+            if let Some(orders_at_price) = self.asks.get_mut(&price) {
+                let mut orders_fully_filled = Vec::new(); // Indices to remove
+
+                for (index, maker_order) in orders_at_price.iter_mut().enumerate() {
+                    let taker_remaining = taker_order.amount - taker_order.filled_amount;
+                    if taker_remaining <= Decimal::ZERO {
+                        break; // Taker order fully filled
+                    }
+
+                    let maker_remaining = maker_order.amount - maker_order.filled_amount;
+                    let fill_amount = taker_remaining.min(maker_remaining);
+
+                    if fill_amount <= Decimal::ZERO {
+                        continue; // Maker order already filled? Skip.
+                    }
+
+                    // Update filled amounts
+                    taker_order.filled_amount += fill_amount;
+                    maker_order.filled_amount += fill_amount;
+
+                    // Create Trade
+                    let trade = Trade {
+                        id: Uuid::new_v4(), // Generate unique trade ID
+                        market_id: taker_order.market_id.clone(),
+                        taker_order_id: taker_order.id,
+                        maker_order_id: maker_order.id,
+                        amount: fill_amount,
+                        price, // Trade occurs at the maker's price
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                        taker_side: Side::Buy,
+                    };
+                    trades.push(trade);
+
+                    // Check if maker order is fully filled
+                    if maker_order.filled_amount >= maker_order.amount {
+                        orders_fully_filled.push(index);
+                        removed_maker_orders.push(maker_order.id);
+                        self.order_locations.remove(&maker_order.id);
+                    } else {
+                        // Add to updated list if partially filled
+                        updated_maker_orders.push(maker_order.clone());
+                    }
+                } // End loop through orders at this price level
+
+                // Remove fully filled maker orders from VecDeque (in reverse index order)
+                for index in orders_fully_filled.into_iter().rev() {
+                    orders_at_price.remove(index);
+                }
+
+                // If VecDeque is empty, remove the price level
+                if orders_at_price.is_empty() {
+                    self.asks.remove(&price);
+                }
+            } // End if let Some(orders_at_price)
+
+            if taker_order.filled_amount >= taker_order.amount {
+                break; // Taker order fully filled
+            }
+        } // End loop through ask prices
+    }
+
+    fn match_bid(
+        &mut self,
+        taker_order: &mut Order,
+        trades: &mut Vec<Trade>,
+        removed_maker_orders: &mut Vec<OrderId>,
+        updated_maker_orders: &mut Vec<Order>,
+    ) {
+        // Need to iterate bids in descending price order
+        let mut bid_prices: Vec<Price> = self.bids.keys().cloned().collect();
+        bid_prices.sort_by(|a, b| b.cmp(a)); // Sort descending
+
+        for price in bid_prices {
+            // Check if taker is still willing to sell at this price
+            match taker_order.order_type {
+                OrderType::Limit => {
+                    if price < taker_order.price.unwrap() {
+                        break; // Stop if bid price is lower than limit price
+                    }
+                }
+                OrderType::Market => {
+                    // Market order takes any price
+                }
+            }
+
+            if let Some(orders_at_price) = self.bids.get_mut(&price) {
+                let mut orders_fully_filled = Vec::new(); // Indices to remove
+
+                for (index, maker_order) in orders_at_price.iter_mut().enumerate() {
+                    let taker_remaining = taker_order.amount - taker_order.filled_amount;
+                    if taker_remaining <= Decimal::ZERO {
+                        break; // Taker order fully filled
+                    }
+
+                    let maker_remaining = maker_order.amount - maker_order.filled_amount;
+                    let fill_amount = taker_remaining.min(maker_remaining);
+
+                    if fill_amount <= Decimal::ZERO {
+                        continue;
+                    }
+
+                    // Update filled amounts
+                    taker_order.filled_amount += fill_amount;
+                    maker_order.filled_amount += fill_amount;
+
+                    // Create Trade
+                    let trade = Trade {
+                        id: Uuid::new_v4(),
+                        market_id: taker_order.market_id.clone(),
+                        taker_order_id: taker_order.id,
+                        maker_order_id: maker_order.id,
+                        amount: fill_amount,
+                        price, // Trade occurs at the maker's price
+                        timestamp: chrono::Utc::now().timestamp_millis(),
+                        taker_side: Side::Sell,
+                    };
+                    trades.push(trade);
+
+                    // Check if maker order is fully filled
+                    if maker_order.filled_amount >= maker_order.amount {
+                        orders_fully_filled.push(index);
+                        removed_maker_orders.push(maker_order.id);
+                        self.order_locations.remove(&maker_order.id);
+                    } else {
+                        updated_maker_orders.push(maker_order.clone());
+                    }
+                } // End loop through orders at this price level
+
+                // Remove fully filled maker orders
+                for index in orders_fully_filled.into_iter().rev() {
+                    orders_at_price.remove(index);
+                }
+
+                // If VecDeque is empty, remove the price level
+                if orders_at_price.is_empty() {
+                    self.bids.remove(&price);
+                }
+            } // End if let Some(orders_at_price)
+
+            if taker_order.filled_amount >= taker_order.amount {
+                break; // Taker order fully filled
+            }
+        } // End loop through bid prices
     }
 
     /// Get's the highest bid price in the orderbook
